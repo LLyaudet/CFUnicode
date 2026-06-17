@@ -380,10 +380,26 @@ function check_file_is_valid_ASCII(string $s_file_path) : bool {
 
 
 
+const I_UTF8_CONTINUATION_OCTET_MINIMUM = 128;
+const I_UTF8_CONTINUATION_OCTET_MAXIMUM = 191;
+
+
+const I_NON_UTF8_ERROR_TYPE__FORBIDDEN_VALUES = 1;
+const I_NON_UTF8_ERROR_TYPE__UNEXPECTED_NON_CONTINUATION_OCTET = 2;
+const I_NON_UTF8_ERROR_TYPE__CONTINUATION_OCTET_BELOW_MINIMUM = 3;
+const I_NON_UTF8_ERROR_TYPE__CONTINUATION_OCTET_ABOVE_MAXIMUM = 4;
+const I_NON_UTF8_ERROR_TYPE__RANGE_OF_SURROGATE_PAIRS = 5;  // A.K.A. 4'
+const I_NON_UTF8_ERROR_TYPE__UNEXPECTED_CONTINUATION_OCTET = 6;
+const I_NON_UTF8_ERROR_TYPE__INVALID_OCTET = 7;
+const I_NON_UTF8_ERROR_TYPE__PREMATURE_END_OF_STRING = 8;
+
+
+
 /**
 This function returns the message string and data array for
 DOSAS_unicode\InvalidEncodingException inside check_string_is_valid_UTF8().
 
+@param int $i_error_type The type of the error, see constants above.
 @param string $s_custom_message The custom part of the message.
 @param int $i_current_octet The current octet in the string.
 @param int $i_continuation_octet_needed The current number of continuation
@@ -413,6 +429,7 @@ DOSAS_unicode\InvalidEncodingException inside check_string_is_valid_UTF8().
 @return array
 */
 function get_message_and_data_array(
+  int $i_error_type,
   string $s_custom_message,
   int $i_current_octet,
   int $i_continuation_octet_needed,
@@ -451,6 +468,7 @@ function get_message_and_data_array(
       .'.)'
     ),
     'data' => [
+      'error_type' => $i_error_type,
       'current_octet' => $i_current_octet,
       'continuation_octet_needed' => $i_continuation_octet_needed,
       'offset_in_octets_from_string_start'
@@ -570,11 +588,13 @@ function check_string_is_valid_UTF8(
 
   // For the second octet of a character, hence first continuation octet,
   // further restriction may apply.
-  $I_CONTINUATION_OCTET_MINIMUM = 128;
-  $I_CONTINUATION_OCTET_MAXIMUM = 191;
-  $i_current_continuation_octet_minimum = $I_CONTINUATION_OCTET_MINIMUM;
-  $i_current_continuation_octet_maximum = $I_CONTINUATION_OCTET_MAXIMUM;
-  $s_message_for_continuation_octet_above_maximum = null;
+  $i_current_continuation_octet_minimum = (
+    I_UTF8_CONTINUATION_OCTET_MINIMUM
+  );
+  $i_current_continuation_octet_maximum = (
+    I_UTF8_CONTINUATION_OCTET_MAXIMUM
+  );
+  $i_error_type_for_continuation_octet_above_maximum = null;
 
   for($i = 0, $i_max = strlen($s_string); $i < $i_max; ++$i){
     $i_current_octet = ord($s_string[$i]);
@@ -598,6 +618,7 @@ function check_string_is_valid_UTF8(
         'message' => $s_message,
         'data' => $arr_data,
       ] = get_message_and_data_array(
+        I_NON_UTF8_ERROR_TYPE__FORBIDDEN_VALUES,
         ' which is one of the four forbidden values (C0, C1, F5, FF).',
         $i_current_octet,
         $i_continuation_octet_needed,
@@ -632,17 +653,15 @@ function check_string_is_valid_UTF8(
     */
     if($i_continuation_octet_needed > 0){
       if(
-        $i_current_octet < $i_current_continuation_octet_minimum
-        || $i_current_octet > $i_current_continuation_octet_maximum
+        $i_current_octet < I_UTF8_CONTINUATION_OCTET_MINIMUM
+        || $i_current_octet > I_UTF8_CONTINUATION_OCTET_MAXIMUM
       ){
         [
           'message' => $s_message,
           'data' => $arr_data,
         ] = get_message_and_data_array(
-          $s_message_for_continuation_octet_above_maximum !== null
-          && $i_current_octet > $i_current_continuation_octet_maximum
-          ? $s_message_for_continuation_octet_above_maximum
-          : ' which is not a continuation octet.',
+          I_NON_UTF8_ERROR_TYPE__UNEXPECTED_NON_CONTINUATION_OCTET,
+          ' which is not a continuation octet.',
           $i_current_octet,
           $i_continuation_octet_needed,
           $i_offset_in_octets_from_string_start,
@@ -657,12 +676,84 @@ function check_string_is_valid_UTF8(
         );
         throw new InvalidEncodingException($s_message, $arr_data);
       }//end if($i_current_octet < 128 || $i_current_octet >= 192)
+
+      if($i_current_octet < $i_current_continuation_octet_minimum){
+        [
+          'message' => $s_message,
+          'data' => $arr_data,
+        ] = get_message_and_data_array(
+          I_NON_UTF8_ERROR_TYPE__CONTINUATION_OCTET_BELOW_MINIMUM,
+          ' which is below the contextual minimum for a continuation'
+          .' octet.',
+          $i_current_octet,
+          $i_continuation_octet_needed,
+          $i_offset_in_octets_from_string_start,
+          $i_offset_in_characters_from_string_start,
+          $i_character_start_position_from_string_start,
+          $i_current_line_number,
+          $i_offset_in_octets_from_line_start,
+          $i_offset_in_characters_from_line_start,
+          $i_character_start_position_from_line_start,
+          $i_current_continuation_octet_minimum,
+          $i_current_continuation_octet_maximum,
+        );
+        throw new InvalidEncodingException($s_message, $arr_data);
+      }//end if($i_current_octet < $i_current_continuation_octet_minimum)
+
+      if($i_current_octet > $i_current_continuation_octet_maximum){
+        $i_error_type = (
+          I_NON_UTF8_ERROR_TYPE__CONTINUATION_OCTET_ABOVE_MAXIMUM
+        );
+        $s_submessage = (
+          ' which is below the contextual minimum'
+          .' for a continuation octet.'
+        );
+        if(
+          $i_error_type_for_continuation_octet_above_maximum
+          === I_NON_UTF8_ERROR_TYPE__RANGE_OF_SURROGATE_PAIRS
+        ){
+          $i_error_type = (
+            I_NON_UTF8_ERROR_TYPE__RANGE_OF_SURROGATE_PAIRS
+          );
+          $s_submessage = (
+            ' which is into the forbidden range of surrogate pairs.'
+          );
+          $i_error_type_for_continuation_octet_above_maximum = null;
+        }
+        if($i_error_type_for_continuation_octet_above_maximum !== null){
+          throw new \Exception(
+            'Bug: You forgot to handle the value '
+            .$i_error_type_for_continuation_octet_above_maximum
+            .'of $i_error_type_for_continuation_octet_above_maximum.'
+          );
+        }
+
+        [
+          'message' => $s_message,
+          'data' => $arr_data,
+        ] = get_message_and_data_array(
+          $i_error_type,
+          $s_submessage,
+          $i_current_octet,
+          $i_continuation_octet_needed,
+          $i_offset_in_octets_from_string_start,
+          $i_offset_in_characters_from_string_start,
+          $i_character_start_position_from_string_start,
+          $i_current_line_number,
+          $i_offset_in_octets_from_line_start,
+          $i_offset_in_characters_from_line_start,
+          $i_character_start_position_from_line_start,
+          $i_current_continuation_octet_minimum,
+          $i_current_continuation_octet_maximum,
+        );
+        throw new InvalidEncodingException($s_message, $arr_data);
+      }//end if($i_current_octet > $i_current_continuation_octet_maximum)
       --$i_continuation_octet_needed;
       $i_current_continuation_octet_minimum = (
-        $I_CONTINUATION_OCTET_MINIMUM
+        I_UTF8_CONTINUATION_OCTET_MINIMUM
       );
       $i_current_continuation_octet_maximum = (
-        $I_CONTINUATION_OCTET_MAXIMUM
+        I_UTF8_CONTINUATION_OCTET_MAXIMUM
       );
       continue;
     }//end if($i_continuation_octet_needed > 0)
@@ -691,6 +782,7 @@ function check_string_is_valid_UTF8(
         'message' => $s_message,
         'data' => $arr_data,
       ] = get_message_and_data_array(
+        I_NON_UTF8_ERROR_TYPE__UNEXPECTED_CONTINUATION_OCTET,
         ' which is a continuation octet.',
         $i_current_octet,
         $i_continuation_octet_needed,
@@ -745,8 +837,8 @@ function check_string_is_valid_UTF8(
       if($i_current_octet === 237){
         $i_current_continuation_octet_minimum = 128;  // Normal value
         $i_current_continuation_octet_maximum = 159;
-        $s_message_for_continuation_octet_above_maximum = (
-          ' which is into the forbidden range of surrogate pairs.'
+        $i_error_type_for_continuation_octet_above_maximum = (
+          I_NON_UTF8_ERROR_TYPE__RANGE_OF_SURROGATE_PAIRS
         );
       }
       continue;
@@ -776,6 +868,7 @@ function check_string_is_valid_UTF8(
       'message' => $s_message,
       'data' => $arr_data,
     ] = get_message_and_data_array(
+      I_NON_UTF8_ERROR_TYPE__INVALID_OCTET,
       ' which is invalid.',
       $i_current_octet,
       $i_continuation_octet_needed,
@@ -797,6 +890,7 @@ function check_string_is_valid_UTF8(
       'message' => $s_message,
       'data' => $arr_data,
     ] = get_message_and_data_array(
+      I_NON_UTF8_ERROR_TYPE__PREMATURE_END_OF_STRING,
       '; end of string was found instead of a continuation octet.',
       $i_current_octet,
       $i_continuation_octet_needed,
